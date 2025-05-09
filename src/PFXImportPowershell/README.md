@@ -282,3 +282,69 @@ For payload, see above example.
 	https://graph.microsoft.com/beta/users?$filter=userPrincipalName eq '{UPN}'
 
 The user id is found in the id value of the returned object.
+
+Troubleshooting:
+
+
+**Prepare the Certificate**
+- Add your certificate to the **LocalMachine\\My** store.
+- Example PowerShell snippet:
+
+```powershell
+
+$cert = Get-ChildItem -Path "Cert:\\LocalMachine\\My" | Where-Object { $_.Subject -like "*Your_cert*" }
+
+$thumbprint = $cert.Thumbprint"
+```
+
+
+Update .csproj File
+Edit PFXImportPS.csproj and replace/add references:
+
+```PFXImportPS.csproj
+<ItemGroup>
+  <Reference Include="Microsoft.Identity.Client">
+    <HintPath>packages\\Microsoft.Identity.Client.4.60.0\\lib\\net462\\Microsoft.Identity.Client.dll</HintPath>
+    <Private>True</Private>
+  </Reference>
+  <Reference Include="Microsoft.IdentityModel.Abstractions">
+    <HintPath>packages\\Microsoft.IdentityModel.Abstractions.6.35.0\\lib\\net461\\Microsoft.IdentityModel.Abstractions.dll</HintPath>
+    <Private>True</Private>
+  </Reference>
+</ItemGroup>
+```
+
+
+```PFXImportPS.csproj
+<Reference Include="Newtonsoft.Json">
+  <HintPath>packages\\Newtonsoft.Json.13.0.3\\lib\\net45\\Newtonsoft.Json.dll</HintPath>
+  <Private>True</Private>
+</Reference>
+```
+
+📦 Install NuGet Packages
+```Download Required Packages Using NuGet
+nuget.exe install Microsoft.Identity.Client -OutputDirectory packages
+nuget.exe install Microsoft.IdentityModel.Abstractions -OutputDirectory packages
+nuget.exe install Newtonsoft.Json -OutputDirectory packages
+```
+
+Build Instructions
+```Clean the Solution
+MSBuild.exe PFXImportPS.csproj /t:Clean
+```
+
+Build the Project
+```powershell
+MSBuild.exe PFXImportPS.csproj /p:Configuration=Debug
+```
+
+
+Import Module and Authenticat
+```powershell
+Import-Module 'C:\\Modules_Intune\\IntunePfxImport\\IntunePfxImport.psd1'
+Set-IntuneAuthenticationToken
+Add-IntuneKspKey "Microsoft Software Key Storage Provider" "Intune Key"
+Export-IntunePublicKey -ProviderName "Microsoft Software Key Storage Provider" -KeyName "Intune Key" -FilePath "C:\Modules_Intune"
+```
+

@@ -336,6 +336,7 @@ nuget.exe install Castle.Core -Version 4.2.1 -OutputDirectory packages
 nuget.exe install System.ValueTuple -Version 4.4.0 -OutputDirectory packages
 nuget.exe install System.Threading.Tasks.Extensions -Version 4.3.0 -OutputDirectory packages
 nuget.exe install MSTest.TestFramework -OutputDirectory packages
+nuget restore PFXImportPS.sln
 
 ```
 

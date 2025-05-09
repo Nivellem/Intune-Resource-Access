@@ -283,7 +283,8 @@ For payload, see above example.
 
 The user id is found in the id value of the returned object.
 
-Troubleshooting:
+
+## Troubleshooting:
 
 
 **Prepare the Certificate**
@@ -299,6 +300,7 @@ $thumbprint = $cert.Thumbprint"
 
 
 Update .csproj File
+
 Edit PFXImportPS.csproj and replace/add references:
 
 ```PFXImportPS.csproj
@@ -324,9 +326,17 @@ Edit PFXImportPS.csproj and replace/add references:
 
 📦 Install NuGet Packages
 ```Download Required Packages Using NuGet
+powershell -Command "Invoke-WebRequest https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -OutFile nuget.exe"
+nuget.exe sources Add -Name "nuget.org" -Source "https://api.nuget.org/v3/index.json"
 nuget.exe install Microsoft.Identity.Client -OutputDirectory packages
 nuget.exe install Microsoft.IdentityModel.Abstractions -OutputDirectory packages
 nuget.exe install Newtonsoft.Json -OutputDirectory packages
+nuget.exe install Moq -Version 4.8.2 -OutputDirectory packages
+nuget.exe install Castle.Core -Version 4.2.1 -OutputDirectory packages
+nuget.exe install System.ValueTuple -Version 4.4.0 -OutputDirectory packages
+nuget.exe install System.Threading.Tasks.Extensions -Version 4.3.0 -OutputDirectory packages
+nuget.exe install MSTest.TestFramework -OutputDirectory packages
+
 ```
 
 Build Instructions

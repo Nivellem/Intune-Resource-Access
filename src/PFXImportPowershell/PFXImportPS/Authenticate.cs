@@ -28,6 +28,7 @@ namespace Microsoft.Management.Powershell.PFXImport
     using System.Collections.Generic;
     using System.Diagnostics.CodeAnalysis;
     using System.Security;
+    using System.Security.Cryptography.X509Certificates;
     using Microsoft.Identity.Client;
 
     public class Authenticate
@@ -47,8 +48,6 @@ namespace Microsoft.Management.Powershell.PFXImport
         }
 
         private static CachedTokenApplicationType cachedTokenApplicationType = CachedTokenApplicationType.None;
-
-
 
         public static string GetClientId(Hashtable modulePrivateData)
         {
@@ -70,6 +69,7 @@ namespace Microsoft.Management.Powershell.PFXImport
         {
             return (string)modulePrivateData["GraphURI"] ?? Authenticate.GraphURI;
         }
+
         public static string GetSchemaVersion(Hashtable modulePrivateData)
         {
             return (string)modulePrivateData["SchemaVersion"] ?? Authenticate.SchemaVersion;
@@ -85,7 +85,6 @@ namespace Microsoft.Management.Powershell.PFXImport
             string tenantId = (string)modulePrivateData["TenantId"];
             if (!string.IsNullOrWhiteSpace(tenantId))
             {
-                // verify this is a valid guid
                 if (Guid.TryParse(tenantId, out _))
                 {
                     return tenantId;
@@ -95,10 +94,8 @@ namespace Microsoft.Management.Powershell.PFXImport
                     throw new ArgumentException("Specified TenantId is not a valid guid");
                 }
             }
-            else
-            {
-                return null;
-            }
+
+            return null;
         }
 
         private static string GetClientSecret(Hashtable modulePrivateData)
@@ -106,16 +103,42 @@ namespace Microsoft.Management.Powershell.PFXImport
             return (string)modulePrivateData["ClientSecret"];
         }
 
-        [SuppressMessage("StyleCop.CSharp.MaintainabilityRules", "SA1401:FieldsMustBePrivate", Justification = "Declaring it as a function helps to test a code path.")]
-        [SuppressMessage("Microsoft.Usage", "CA2211:NonConstantFieldsShouldNotBeVisible", Justification = "Needs to be public and can't make functions consts")]
-        public static Func<AuthenticationResult, bool> AuthTokenIsValid = (AuthRes) =>
+        private static string GetClientCertThumbprint(Hashtable modulePrivateData)
         {
-            if (AuthRes != null && AuthRes.AccessToken != null && AuthRes.ExpiresOn > DateTimeOffset.UtcNow)
+            return (string)modulePrivateData["ClientCertificateThumbprint"];
+        }
+
+        private static X509Certificate2 GetClientCertificate(Hashtable modulePrivateData)
+        {
+            string thumbprint = GetClientCertThumbprint(modulePrivateData);
+            if (string.IsNullOrWhiteSpace(thumbprint))
             {
-                return true;
+                throw new ArgumentException("ClientCertificateThumbprint must be provided in module PrivateData");
             }
 
-            return false;
+            using (X509Store store = new X509Store(StoreName.My, StoreLocation.LocalMachine))
+            {
+                store.Open(OpenFlags.ReadOnly);
+                X509Certificate2Collection certs = store.Certificates.Find(
+                    X509FindType.FindByThumbprint,
+                    thumbprint,
+                    validOnly: false
+                );
+
+                if (certs.Count == 0)
+                {
+                    throw new ArgumentException($"Certificate with thumbprint {thumbprint} not found in LocalMachine\\My.");
+                }
+
+                return certs[0];
+            }
+        }
+
+        [SuppressMessage("StyleCop.CSharp.MaintainabilityRules", "SA1401:FieldsMustBePrivate", Justification = "Declaring it as a function helps to test a code path.")]
+        [SuppressMessage("Microsoft.Usage", "CA2211:NonConstantFieldsShouldNotBeVisible", Justification = "Needs to be public and can't make functions consts")]
+        public static Func<AuthenticationResult, bool> AuthTokenIsValid = (authRes) =>
+        {
+            return authRes != null && authRes.AccessToken != null && authRes.ExpiresOn > DateTimeOffset.UtcNow;
         };
 
         private static string redirectUri = @"https://login.microsoftonline.com/common/oauth2/nativeclient";
@@ -127,91 +150,84 @@ namespace Microsoft.Management.Powershell.PFXImport
 
         private static string[] GetScopes(Hashtable modulePrivateData)
         {
-            return new string[] { $"{ GetGraphURI(modulePrivateData) }/.default" };
+            return new string[] { $"{GetGraphURI(modulePrivateData)}/.default" };
         }
 
         private static IPublicClientApplication BuildMSALClientApplications(Hashtable modulePrivateData)
         {
-            IPublicClientApplication app = PublicClientApplicationBuilder.Create(GetClientId(modulePrivateData))
-                .WithCacheOptions(CacheOptions.EnableSharedCacheOptions) // create static memory cache
+            return PublicClientApplicationBuilder.Create(GetClientId(modulePrivateData))
+                .WithCacheOptions(CacheOptions.EnableSharedCacheOptions)
                 .WithAuthority(GetAuthority(modulePrivateData))
                 .WithRedirectUri(GetRedirectUri(modulePrivateData).ToString())
                 .Build();
-            return app;
         }
 
         private static IConfidentialClientApplication BuildMSALConfidentialClientApplication(Hashtable modulePrivateData)
         {
-            IConfidentialClientApplication app = ConfidentialClientApplicationBuilder.Create(GetClientId(modulePrivateData))
+            ConfidentialClientApplicationBuilder builder = ConfidentialClientApplicationBuilder.Create(GetClientId(modulePrivateData))
                 .WithAuthority(GetAuthority(modulePrivateData))
                 .WithRedirectUri(GetRedirectUri(modulePrivateData).ToString())
-                .WithTenantId(GetTenantId(modulePrivateData))  
-                .WithClientSecret(GetClientSecret(modulePrivateData))
-                .Build();
-            return app;
+                .WithTenantId(GetTenantId(modulePrivateData));
+
+            string secret = GetClientSecret(modulePrivateData);
+            string thumbprint = GetClientCertThumbprint(modulePrivateData);
+
+            if (!string.IsNullOrWhiteSpace(secret))
+            {
+                builder = builder.WithClientSecret(secret);
+            }
+            else if (!string.IsNullOrWhiteSpace(thumbprint))
+            {
+                X509Certificate2 cert = GetClientCertificate(modulePrivateData);
+                builder = builder.WithCertificate(cert);
+            }
+            else
+            {
+                throw new ArgumentException("Either ClientSecret or ClientCertificateThumbprint must be provided.");
+            }
+
+            return builder.Build();
         }
 
         public static AuthenticationResult GetAuthToken(string user, SecureString password, Hashtable modulePrivateData)
         {
             if (!string.IsNullOrWhiteSpace(user))
             {
-
                 IPublicClientApplication app = BuildMSALClientApplications(modulePrivateData);
-
                 AuthenticationResult result;
-                if (password == null)
+
+                try
                 {
-                    try
+                    if (password == null)
                     {
                         result = app.AcquireTokenInteractive(GetScopes(modulePrivateData))
                             .WithLoginHint(user)
-                            .ExecuteAsync()
-                            .Result;
+                            .ExecuteAsync().Result;
                     }
-                    catch (AggregateException ex)
-                    {
-                        throw ex.InnerException;
-                    }
-                }
-                else
-                {
-                    try
+                    else
                     {
                         result = app.AcquireTokenByUsernamePassword(GetScopes(modulePrivateData), user, password)
-                            .ExecuteAsync()
-                            .Result;
+                            .ExecuteAsync().Result;
                     }
-                    catch (AggregateException ex)
-                    {
-                        throw ex.InnerException;
-                    }
+                }
+                catch (AggregateException ex)
+                {
+                    throw ex.InnerException;
                 }
 
                 cachedTokenApplicationType = CachedTokenApplicationType.PublicApplication;
-
                 return result;
             }
             else
             {
-                string clientSecret = GetClientSecret(modulePrivateData);
-                if (string.IsNullOrWhiteSpace(clientSecret))
-                {
-                    throw new ArgumentException("No authentication method provided.  Specify AdminUserName on command line or ClientSecret setting in module PrivateData.");
-                }
-
-                if (string.Compare(GetTenantId(modulePrivateData), Guid.Empty.ToString(), StringComparison.OrdinalIgnoreCase) == 0)
-                {
-                    throw new ArgumentException("TenantId must be provided in module PrivateData when authenticating with client secret");
-                }
-
                 AuthenticationResult result;
+
                 try
                 {
                     IConfidentialClientApplication app = BuildMSALConfidentialClientApplication(modulePrivateData);
                     result = app.AcquireTokenForClient(GetScopes(modulePrivateData))
                         .WithAuthority(string.Format("https://{0}", GetAuthURI(modulePrivateData)), GetTenantId(modulePrivateData))
-                        .ExecuteAsync()
-                        .Result;
+                        .ExecuteAsync().Result;
                 }
                 catch (AggregateException ex)
                 {
@@ -219,7 +235,6 @@ namespace Microsoft.Management.Powershell.PFXImport
                 }
 
                 cachedTokenApplicationType = CachedTokenApplicationType.ConfidentialApplication;
-
                 return result;
             }
         }
@@ -229,26 +244,21 @@ namespace Microsoft.Management.Powershell.PFXImport
             if (cachedTokenApplicationType == CachedTokenApplicationType.PublicApplication)
             {
                 IPublicClientApplication app = BuildMSALClientApplications(modulePrivateData);
-
-                List<IAccount> accounts = new List<IAccount>((app.GetAccountsAsync()).Result);
+                List<IAccount> accounts = new List<IAccount>(app.GetAccountsAsync().Result);
 
                 if (accounts.Count < 1)
                 {
-                    throw new ArgumentException("No token cached.  First call Set-IntuneAuthenticationToken");
+                    throw new ArgumentException("No token cached. First call Set-IntuneAuthenticationToken");
                 }
-                else
+
+                try
                 {
-                    try
-                    {
-                        // use the account in the cache, if possible
-                        return app.AcquireTokenSilent(GetScopes(modulePrivateData), accounts[0])
-                           .ExecuteAsync()
-                           .Result;
-                    }
-                    catch (AggregateException ex)
-                    {
-                        throw ex.InnerException;
-                    }
+                    return app.AcquireTokenSilent(GetScopes(modulePrivateData), accounts[0])
+                        .ExecuteAsync().Result;
+                }
+                catch (AggregateException ex)
+                {
+                    throw ex.InnerException;
                 }
             }
             else if (cachedTokenApplicationType == CachedTokenApplicationType.ConfidentialApplication)
@@ -258,8 +268,7 @@ namespace Microsoft.Management.Powershell.PFXImport
                     IConfidentialClientApplication app = BuildMSALConfidentialClientApplication(modulePrivateData);
                     return app.AcquireTokenForClient(GetScopes(modulePrivateData))
                         .WithAuthority(string.Format("https://{0}", GetAuthURI(modulePrivateData)), GetTenantId(modulePrivateData))
-                        .ExecuteAsync()
-                        .Result;
+                        .ExecuteAsync().Result;
                 }
                 catch (AggregateException ex)
                 {
@@ -268,23 +277,23 @@ namespace Microsoft.Management.Powershell.PFXImport
             }
             else
             {
-                throw new ArgumentException("No token cached.  First call Set-IntuneAuthenticationToken");
+                throw new ArgumentException("No token cached. First call Set-IntuneAuthenticationToken");
             }
         }
 
-        public static void ClearTokenCache(Hashtable modulePrivateData)  
+        public static void ClearTokenCache(Hashtable modulePrivateData)
         {
             IPublicClientApplication app = BuildMSALClientApplications(modulePrivateData);
-
-            List<IAccount> accounts = new List<IAccount>((app.GetAccountsAsync()).Result);
+            List<IAccount> accounts = new List<IAccount>(app.GetAccountsAsync().Result);
 
             while (accounts.Count > 0)
             {
                 app.RemoveAsync(accounts[0]).Wait();
-                accounts = new List<IAccount>((app.GetAccountsAsync()).Result);
+                accounts = new List<IAccount>(app.GetAccountsAsync().Result);
             }
 
             cachedTokenApplicationType = CachedTokenApplicationType.None;
         }
     }
 }
+
